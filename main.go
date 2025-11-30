@@ -12,7 +12,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
-
+	"encoding/json"
 	"sd_tarea3/common" // Asume que el directorio es sd_tarea3
 )
 
