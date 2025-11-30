@@ -54,22 +54,30 @@ func NewInitialState() *ReplicatedState {
 
 // Persist guarda el estado actual en el archivo nodo_<ID>.json.
 func (s *ReplicatedState) Persist(nodeID int) error {
-	s.Mu.RLock()
-	defer s.Mu.RUnlock()
+    // 1. Construir el nombre del archivo
+    fileName := fmt.Sprintf(InventoryFile, nodeID)
+    
+    // 2. Debug: Imprimir qué vamos a hacer
+    fmt.Printf("💾 [DEBUG] Intentando GUARDAR estado en disco: %s (Seq: %d)...\n", fileName, s.SequenceNumber)
 
-	fileName := fmt.Sprintf(InventoryFile, nodeID)
-	data, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		return fmt.Errorf("error al serializar el estado: %w", err)
-	}
+    // 3. Convertir datos a JSON
+    data, err := json.MarshalIndent(s, "", "  ")
+    if err != nil {
+        fmt.Printf("❌ [DEBUG] Error al convertir a JSON: %v\n", err)
+        return fmt.Errorf("error al serializar el estado: %w", err)
+    }
 
-	err = os.WriteFile(fileName, data, 0644)
-	if err != nil {
-		return fmt.Errorf("error al escribir en el archivo %s: %w", fileName, err)
-	}
-	return nil
+    // 4. Escribir al archivo (permisos 0644)
+    err = os.WriteFile(fileName, data, 0644)
+    if err != nil {
+        fmt.Printf("❌ [DEBUG] Error FATAL al escribir en archivo %s: %v\n", fileName, err)
+        return fmt.Errorf("error al escribir el archivo %s: %w", fileName, err)
+    }
+
+    // 5. Confirmación de éxito
+    fmt.Printf("✅ [DEBUG] ¡ESCRITURA EXITOSA en %s! Secuencia guardada: %d\n", fileName, s.SequenceNumber)
+    return nil
 }
-
 // Load carga el estado desde el archivo nodo_<ID>.json. Si el archivo no existe,
 // devuelve el estado inicial.
 func (s *ReplicatedState) Load(nodeID int) error {
