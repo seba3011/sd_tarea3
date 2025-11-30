@@ -45,9 +45,11 @@ Debe conectarse a cada máquina virtual y ejecutar el script desde la carpeta `s
 ```bash
 go run client/client.go
 ```
+realizar consultas requeridas 
+
 ## Ejemplo matar nodo X
 cerrar codigo con ctl+c (desde /scripts)
 ```bash
 ./fail_node.sh x
 ```
-realizar consultas requeridas
+
