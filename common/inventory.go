@@ -43,8 +43,8 @@ func NewInitialState() *ReplicatedState {
 	return &ReplicatedState{
 		SequenceNumber: 0,
 		Inventory: map[string]Item{
-			"LAPICES": {Quantity: 100, Price: 120},
-			"LIBROS":  {Quantity: 50, Price: 15500},
+			"LAPICES":  {Quantity: 100, Price: 120},
+			"LIBROS":   {Quantity: 50, Price: 15500},
 			"BORRADOR": {Quantity: 200, Price: 50},
 			"CUADERNO": {Quantity: 75, Price: 2500},
 		},
@@ -54,30 +54,31 @@ func NewInitialState() *ReplicatedState {
 
 // Persist guarda el estado actual en el archivo nodo_<ID>.json.
 func (s *ReplicatedState) Persist(nodeID int) error {
-    // 1. Construir el nombre del archivo
-    fileName := fmt.Sprintf(InventoryFile, nodeID)
-    
-    // 2. Debug: Imprimir qué vamos a hacer
-    fmt.Printf("💾 [DEBUG] Intentando GUARDAR estado en disco: %s (Seq: %d)...\n", fileName, s.SequenceNumber)
+	// 1. Construir el nombre del archivo
+	fileName := fmt.Sprintf(InventoryFile, nodeID)
 
-    // 3. Convertir datos a JSON
-    data, err := json.MarshalIndent(s, "", "  ")
-    if err != nil {
-        fmt.Printf("❌ [DEBUG] Error al convertir a JSON: %v\n", err)
-        return fmt.Errorf("error al serializar el estado: %w", err)
-    }
+	// 2. Debug: Imprimir qué vamos a hacer
+	fmt.Printf("💾 [DEBUG] Intentando GUARDAR estado en disco: %s (Seq: %d)...\n", fileName, s.SequenceNumber)
 
-    // 4. Escribir al archivo (permisos 0644)
-    err = os.WriteFile(fileName, data, 0644)
-    if err != nil {
-        fmt.Printf("❌ [DEBUG] Error FATAL al escribir en archivo %s: %v\n", fileName, err)
-        return fmt.Errorf("error al escribir el archivo %s: %w", fileName, err)
-    }
+	// 3. Convertir datos a JSON
+	data, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		fmt.Printf("❌ [DEBUG] Error al convertir a JSON: %v\n", err)
+		return fmt.Errorf("error al serializar el estado: %w", err)
+	}
 
-    // 5. Confirmación de éxito
-    fmt.Printf("✅ [DEBUG] ¡ESCRITURA EXITOSA en %s! Secuencia guardada: %d\n", fileName, s.SequenceNumber)
-    return nil
+	// 4. Escribir al archivo (permisos 0644)
+	err = os.WriteFile(fileName, data, 0644)
+	if err != nil {
+		fmt.Printf("❌ [DEBUG] Error FATAL al escribir en archivo %s: %v\n", fileName, err)
+		return fmt.Errorf("error al escribir el archivo %s: %w", fileName, err)
+	}
+
+	// 5. Confirmación de éxito
+	fmt.Printf("✅ [DEBUG] ¡ESCRITURA EXITOSA en %s! Secuencia guardada: %d\n", fileName, s.SequenceNumber)
+	return nil
 }
+
 // Load carga el estado desde el archivo nodo_<ID>.json. Si el archivo no existe,
 // devuelve el estado inicial.
 func (s *ReplicatedState) Load(nodeID int) error {
@@ -102,23 +103,23 @@ func (s *ReplicatedState) Load(nodeID int) error {
 
 // ApplyEvent aplica un evento de modificación al estado del inventario.
 func (s *ReplicatedState) ApplyEvent(event Event) {
-	s.Mu.Lock()
-	defer s.Mu.Unlock()
-
+	// --- CORRECCIÓN CRÍTICA: SE ELIMINARON LOS LOCKS PARA EVITAR DEADLOCK ---
+	// El bloqueo ya se realiza en main.go antes de llamar a esta función.
+	
 	if event.Seq > s.SequenceNumber+1 {
 		fmt.Printf("❌ Error de secuencia: Evento %d recibido, se esperaba %d\n", event.Seq, s.SequenceNumber+1)
 		return
 	}
 
 	if event.Seq <= s.SequenceNumber {
-		// Evento ya aplicado. Se ignora.
+		// Evento ya aplicado. Se ignora para idempotencia.
 		return
 	}
 
 	s.SequenceNumber = event.Seq
 	item, ok := s.Inventory[event.Item]
 	if !ok {
-		// Asume que las modificaciones son a ítems existentes.
+		// Asume que las modificaciones son a ítems existentes, o crea uno nuevo si no existe.
 		fmt.Printf("⚠️ Ítem %s no encontrado, creando con valores por defecto.\n", event.Item)
 		item = Item{}
 	}
