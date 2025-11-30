@@ -135,7 +135,7 @@ func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error 
 
 // replicateEvent llama al RPC del secundario para aplicar un evento.
 func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) error {
-	// 1. Timeout de Conexión (TCP) - 1 segundo
+	// 1. Timeout de Conexión (TCP): 1 segundo
 	conn, err := net.DialTimeout("tcp", secondaryAddr, 1*time.Second)
 	if err != nil {
 		return fmt.Errorf("timeout conexión: %v", err)
@@ -146,16 +146,16 @@ func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) er
 
 	var reply string
 
-	// 2. TIMEOUT DE EJECUCIÓN (RPC) - ¡ESTA ES LA SOLUCIÓN AL CONGELAMIENTO!
-	// En lugar de client.Call (que bloquea para siempre), usamos client.Go
+	// 2. TIMEOUT DE EJECUCIÓN (RPC) - ¡ESTO EVITA EL CONGELAMIENTO!
+	// Usamos client.Go para no bloquearnos esperando.
 	call := client.Go("ServerNode.ReceiveReplication", event, &reply, nil)
 
 	select {
 	case <-call.Done:
-		// El nodo respondió (con éxito o error)
+		// La llamada terminó (con éxito o error del otro lado)
 		return call.Error
 	case <-time.After(1 * time.Second):
-		// El nodo aceptó la conexión pero no respondió en 1 segundo. LO MATAMOS.
+		// El otro nodo aceptó la conexión pero no responde. LO CORTAMOS.
 		return fmt.Errorf("timeout RPC: nodo lento o colgado")
 	}
 }
