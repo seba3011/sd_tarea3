@@ -249,10 +249,19 @@ func modifyInventory(reader *bufio.Reader) {
 			time.Sleep(2 * time.Second) // Pausa para no saturar
 			continue
 		}
-
 		// 3. Manejar Redirección
 		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 			newPrimaryID, _ := strconv.Atoi(reply[10:])
+			
+			// CASO ESPECIAL: El nodo no sabe quién es el líder todavía (-1)
+			if newPrimaryID == -1 {
+				fmt.Println("⏳ El nodo contactado está en votación (Líder desconocido). Esperando 2s...")
+				time.Sleep(2 * time.Second)
+				knownPrimaryID = -1 // Forzar redescubrimiento total
+				continue
+			}
+
+			// CASO NORMAL: Redirección
 			if knownPrimaryID != newPrimaryID {
 				fmt.Printf("🔄 El Nodo %d dice que el líder es %d. Redirigiendo...\n", primaryID, newPrimaryID)
 			}
