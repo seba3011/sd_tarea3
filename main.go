@@ -247,33 +247,49 @@ func (n *ServerNode) StartMonitoring() {
 // 1. Elección de líder (Algoritmo del matón) [cite: 47]
 func (n *ServerNode) StartElection() {
 	n.StatusMutex.Lock()
-	defer n.StatusMutex.Unlock()
-
 	if n.IsPrimary {
-		return // Ya soy primario, ignora
+		n.StatusMutex.Unlock()
+		return
 	}
+	n.StatusMutex.Unlock()
+
 	fmt.Printf("📢 Nodo %d: Iniciando elección...\n", n.ID)
 
-	// Enviar mensaje de "Election" a todos los nodos con ID más alto [cite: 49]
 	higherNodesExist := false
+	
+	// Iterar sobre nodos con ID mayor
 	for id, addr := range NodeAddresses {
 		if id > n.ID {
 			higherNodesExist = true
 			if n.sendElection(addr) {
-				// Recibió respuesta 'OK', espera a que el nodo más alto tome el control.
-				fmt.Printf("   -> Nodo más alto (%d) respondió. Esperando mensaje 'Coordinator'.\n", id)
-				return // Sale y espera
+				fmt.Printf("   -> Nodo más alto (%d) respondió 'OK'. Esperando coordinación...\n", id)
+				
+				// MEJORA: Esperar un tiempo prudente para recibir el mensaje de Coordinador.
+				// Si no llega, asumimos que el nodo superior falló después de responder.
+				time.Sleep(3 * time.Second)
+
+				n.StatusMutex.RLock()
+				primaryID := n.CurrentPrimary
+				n.StatusMutex.RUnlock()
+
+				// Si después de esperar, el primario sigue siendo desconocido o soy yo mismo (error),
+				// o el primario detectado no es el que respondió, seguimos intentando.
+				if primaryID != -1 && primaryID != n.ID {
+					fmt.Println("   -> Coordinación recibida exitosamente.")
+					return 
+				}
+
+				fmt.Printf("⚠️ El nodo %d respondió pero NO envió coordinación. Asumiendo fallo y continuando elección...\n", id)
+				// No hacemos 'return', dejamos que el bucle continúe para probar otros nodos o autoproclamarnos.
 			}
 		}
 	}
 
-	// Si ningún nodo más alto respondió (o no hay), se declara nuevo primario [cite: 51]
-	if !higherNodesExist || !n.IsPrimary {
-		// Se usa un temporizador simple. Si nadie responde, asume que es el más alto.
-		// Para simplificar, si no hay nodos más altos o nadie respondió, se autoproclama.
-
-		n.becomePrimary()
-	}
+	// Si llegamos aquí, significa que:
+	// 1. No hay nodos mayores.
+	// 2. O los nodos mayores no respondieron.
+	// 3. O los nodos mayores respondieron 'OK' pero fallaron en tomar el mando (timeout).
+	n.becomePrimary()
 }
 
 // sendElection envía un mensaje de elección. Retorna true si recibe respuesta (OK).
