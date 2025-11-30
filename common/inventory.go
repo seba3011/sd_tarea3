@@ -35,7 +35,7 @@ type ReplicatedState struct {
 	Inventory      map[string]Item `json:"inventory"`
 	EventLog       []Event         `json:"event_log"`
 	// Mutex para proteger el acceso concurrente al estado.
-	mu sync.RWMutex
+	Mu sync.RWMutex
 }
 
 // NewInitialState crea un estado inicial con 4 artículos predefinidos.
@@ -54,8 +54,8 @@ func NewInitialState() *ReplicatedState {
 
 // Persist guarda el estado actual en el archivo nodo_<ID>.json.
 func (s *ReplicatedState) Persist(nodeID int) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.Mu.RLock()
+	defer s.Mu.RUnlock()
 
 	fileName := fmt.Sprintf(InventoryFile, nodeID)
 	data, err := json.MarshalIndent(s, "", "  ")
@@ -94,8 +94,8 @@ func (s *ReplicatedState) Load(nodeID int) error {
 
 // ApplyEvent aplica un evento de modificación al estado del inventario.
 func (s *ReplicatedState) ApplyEvent(event Event) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.Mu.Lock()
+	defer s.Mu.Unlock()
 
 	if event.Seq > s.SequenceNumber+1 {
 		fmt.Printf("❌ Error de secuencia: Evento %d recibido, se esperaba %d\n", event.Seq, s.SequenceNumber+1)

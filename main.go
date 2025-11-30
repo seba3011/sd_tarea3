@@ -77,8 +77,8 @@ func (n *ServerNode) HandleClientRequest(req *common.Event, reply *string) error
 func (n *ServerNode) handleReadRequest(reply *string) error {
 	// Las solicitudes de lectura no generan nuevos eventos[cite: 78].
 	// Devuelve el estado actual del inventario.
-	n.State.mu.RLock()
-	defer n.State.mu.RUnlock()
+	n.State.Mu.RLock()
+	defer n.State.Mu.RUnlock()
 
 	inventoryJSON, err := json.MarshalIndent(n.State.Inventory, "", "  ")
 	if err != nil {
@@ -92,8 +92,8 @@ func (n *ServerNode) handleReadRequest(reply *string) error {
 func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
 	n.StatusMutex.Lock()
 	defer n.StatusMutex.Unlock()
-	n.State.mu.Lock()
-	defer n.State.mu.Unlock()
+	n.State.Mu.Lock()
+	defer n.State.Mu.Unlock()
 
 	// 3. Coordinación del primario: Asignar número de secuencia [cite: 56]
 	req.Seq = n.State.SequenceNumber + 1
@@ -190,8 +190,8 @@ func (n *ServerNode) GetState(ignored bool, reply *common.ReplicatedState) error
 	}
 	n.StatusMutex.RUnlock()
 
-	n.State.mu.RLock()
-	defer n.State.mu.RUnlock()
+	n.State.Mu.RLock()
+	defer n.State.Mu.RUnlock()
 
 	// Retorna una copia del estado persistente
 	*reply = *n.State
@@ -400,11 +400,11 @@ func (n *ServerNode) Reintegrate() {
 	}
 
 	// 3. Aplicar el estado recuperado
-	n.State.mu.Lock()
+	n.State.Mu.Lock()
 	n.State.Inventory = newState.Inventory
 	n.State.SequenceNumber = newState.SequenceNumber
 	n.State.EventLog = newState.EventLog // Sobrescribir su estado previo [cite: 65]
-	n.State.mu.Unlock()
+	n.State.Mu.Unlock()
 
 	// 4. Persistir el nuevo estado
 	if err := n.State.Persist(n.ID); err != nil {
@@ -492,7 +492,7 @@ func main() {
 
 	fmt.Printf("🚀 Nodo %d ejecutándose en %s...\n", node.ID, address)
 
-	// Manejo de señales para una salida limpia (simulando fail-stop)
+	// Manejo de señales para una salida limpia (siMulando fail-stop)
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
