@@ -85,30 +85,36 @@ func discoverPrimary() (int, string) {
 // del primario que le indicó (si es secundario), o -1 si falla.
 func checkNode(nodeID int) int {
 	addr := NodeAddresses[nodeID]
-	client, err := rpc.Dial("tcp", addr)
+	
+	// CORRECCIÓN: Usar DialTimeout. Si el nodo no responde en 1 seg, pasamos al siguiente.
+	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
-		// fmt.Printf("⚠️ Nodo %d en %s no responde.\n", nodeID, addr) // Opcional: comentar para menos ruido
-		return -1 // Nodo no responde
+		// fmt.Printf("⚠️ Nodo %d no responde.\n", nodeID)
+		return -1
 	}
+	
+	client := rpc.NewClient(conn)
 	defer client.Close()
 
 	var reply string
 	
-	// CORRECCIÓN: Enviar evento READ en lugar de nil
+	// Usamos Read para no enviar nil
 	readEvent := common.Event{Op: "READ"}
+	
+	// También podríamos usar Go+Select aquí, pero como ya conectamos (TCP), 
+	// el Call suele ser rápido a menos que el servidor esté en Deadlock.
+	// Como ya arreglaste el servidor, esto es seguro.
 	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
 	
 	if err != nil {
-		fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", nodeID, err)
+		// fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", nodeID, err)
 		return -1
 	}
 
-	// El formato es "SECONDARY:ID" si es secundario [cite: 94]
 	if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 		primaryID, _ := strconv.Atoi(reply[10:])
 		return primaryID
 	} else if len(reply) > 9 && reply[:9] == "INVENTORY" {
-		// El primario responde con el inventario
 		return nodeID
 	}
 
@@ -123,18 +129,21 @@ func reviewInventory() {
 	}
 	fmt.Printf("🔍 Contactando al Primario (Nodo %d) en %s para la lectura.\n", primaryID, primaryAddr)
 
-	client, err := rpc.Dial("tcp", primaryAddr)
+	// CORRECCIÓN: Usar DialTimeout
+	conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
 	if err != nil {
-		fmt.Println("❌ Error al conectar con el primario para leer:", err)
+		fmt.Println("❌ Error al conectar con el primario:", err)
 		knownPrimaryID = -1 
 		return
 	}
+
+	client := rpc.NewClient(conn)
 	defer client.Close()
 
 	var reply string
-	
-	// CORRECCIÓN: Enviar evento READ en lugar de nil
 	readEvent := common.Event{Op: "READ"}
+	
+	// Llamada RPC con manejo de error básico
 	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
 	
 	if err != nil {
@@ -145,8 +154,8 @@ func reviewInventory() {
 
 	if len(reply) > 9 && reply[:9] == "INVENTORY" {
 		fmt.Println("\n--- INVENTARIO ACTUAL ---")
-		// Desplegar la lista de ítems [cite: 87]
-		inventoryJSON := reply[10:strings.LastIndex(reply, "\n")] // Quitar "INVENTORY:" y "Sequence: X"
+		// (Resto del parseo igual que antes...)
+		inventoryJSON := reply[10:strings.LastIndex(reply, "\n")] 
 		sequenceLine := reply[strings.LastIndex(reply, "\n")+1:]
 
 		var inventory map[string]common.Item
@@ -160,6 +169,11 @@ func reviewInventory() {
 		}
 		fmt.Println(sequenceLine)
 		fmt.Println("------------------------")
+	} else if len(reply) > 10 && reply[:10] == "SECONDARY:" {
+		// Manejar redirección en lectura también es buena idea
+		newID, _ := strconv.Atoi(reply[10:])
+		fmt.Printf("🔄 El nodo %d indica que el líder es %d. Reintente.\n", primaryID, newID)
+		knownPrimaryID = newID
 	} else {
 		fmt.Println("❌ Respuesta inesperada del primario:", reply)
 	}
