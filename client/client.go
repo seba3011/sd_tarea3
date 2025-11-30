@@ -85,14 +85,17 @@ func checkNode(nodeID int) int {
 	addr := NodeAddresses[nodeID]
 	client, err := rpc.Dial("tcp", addr)
 	if err != nil {
-		fmt.Printf("⚠️ Nodo %d en %s no responde.\n", nodeID, addr)
+		// fmt.Printf("⚠️ Nodo %d en %s no responde.\n", nodeID, addr) // Opcional: comentar para menos ruido
 		return -1 // Nodo no responde
 	}
 	defer client.Close()
 
 	var reply string
-	// Una solicitud de lectura (nil) es suficiente para que un secundario indique el primario.
-	err = client.Call("ServerNode.HandleClientRequest", nil, &reply)
+	
+	// CORRECCIÓN: Enviar evento READ en lugar de nil
+	readEvent := common.Event{Op: "READ"}
+	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
+	
 	if err != nil {
 		fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", nodeID, err)
 		return -1
@@ -121,14 +124,17 @@ func reviewInventory() {
 	client, err := rpc.Dial("tcp", primaryAddr)
 	if err != nil {
 		fmt.Println("❌ Error al conectar con el primario para leer:", err)
-		knownPrimaryID = -1 // Asumir que el primario conocido cayó
+		knownPrimaryID = -1 
 		return
 	}
 	defer client.Close()
 
 	var reply string
-	// Solicitud de lectura (evento nil)
-	err = client.Call("ServerNode.HandleClientRequest", nil, &reply)
+	
+	// CORRECCIÓN: Enviar evento READ en lugar de nil
+	readEvent := common.Event{Op: "READ"}
+	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
+	
 	if err != nil {
 		fmt.Println("❌ Error en la lectura del inventario:", err)
 		knownPrimaryID = -1

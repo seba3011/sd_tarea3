@@ -59,13 +59,14 @@ func (n *ServerNode) HandleClientRequest(req *common.Event, reply *string) error
 	primaryID := n.CurrentPrimary
 	n.StatusMutex.RUnlock()
 
-	if req == nil {
+	// CORRECCIÓN: Aceptamos nil O un evento con Op "READ" como solicitud de lectura
+	if req == nil || req.Op == "READ" {
 		// Solicitud de lectura (Revisar inventario)
 		return n.handleReadRequest(reply)
 	}
 
 	if !isPrimary {
-		// Informar al cliente quién es el primario [cite: 94]
+		// Informar al cliente quién es el primario
 		*reply = fmt.Sprintf("SECONDARY:%d", primaryID)
 		return nil
 	}
