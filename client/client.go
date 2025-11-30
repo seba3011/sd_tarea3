@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/rpc"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"sd_tarea3/common" // Asume que el directorio es sd_tarea3
 )
@@ -165,14 +167,13 @@ func reviewInventory() {
 
 // 8. Funcionalidades del cliente: Modificar inventario [cite: 88]
 func modifyInventory(reader *bufio.Reader) {
-	// 1. Obtener datos del usuario
+	// --- (Parte 1: Obtener datos del usuario igual que antes) ---
 	fmt.Println("\n--- MODIFICAR INVENTARIO ---")
 	fmt.Println("a. Modificar cantidad")
 	fmt.Println("b. Modificar precio")
 	fmt.Print("Ingrese opción (a/b): ")
 	
 	opType, _ := reader.ReadString('\n')
-	// CORRECCIÓN 1: Limpiar espacios y convertir a minúsculas para aceptar 'A' o 'a'
 	opType = strings.ToLower(strings.TrimSpace(opType))
 
 	fmt.Print("Ingrese nombre del ítem a modificar: ")
@@ -198,34 +199,34 @@ func modifyInventory(reader *bufio.Reader) {
 		return
 	}
 
-	event := common.Event{
-		Op:    op,
-		Item:  itemName,
-		Value: newValue,
-		Seq:   0,
-	}
+	event := common.Event{Op: op, Item: itemName, Value: newValue, Seq: 0}
 
-	// 2. Bucle de intentos con Redirección Automática
+	// --- (Parte 2: Bucle con Timeout de Red) ---
 	for {
 		primaryID, primaryAddr := discoverPrimary()
 		if primaryID == -1 {
 			return
 		}
-		// Solo mostramos mensaje si cambiamos de nodo para no saturar la pantalla
+
 		if knownPrimaryID != primaryID {
-			fmt.Printf("✏️ Contactando al Primario (Nodo %d) en %s para la escritura.\n", primaryID, primaryAddr)
+			fmt.Printf("✏️ Contactando al Nodo %d en %s...\n", primaryID, primaryAddr)
 		}
 
-		client, err := rpc.Dial("tcp", primaryAddr)
+		// CORRECCIÓN CLAVE: Usar DialTimeout
+		// Si el nodo está pegado y no acepta conexión en 2 segundos, cancelamos.
+		conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
 		if err != nil {
-			fmt.Println("❌ Error al conectar con el primario:", err)
-			knownPrimaryID = -1
-			continue // Intentar descubrir de nuevo
+			fmt.Printf("⚠️ Timeout/Error contactando Nodo %d. Buscando otro...\n", primaryID)
+			knownPrimaryID = -1 // Forzar nuevo descubrimiento
+			continue
 		}
-		
+
+		client := rpc.NewClient(conn)
 		var reply string
+		
+		// Llamada RPC
 		err = client.Call("ServerNode.HandleClientRequest", &event, &reply)
-		client.Close() // Cerrar conexión tras la llamada
+		client.Close() 
 
 		if err != nil {
 			fmt.Println("❌ Error RPC:", err)
@@ -233,19 +234,20 @@ func modifyInventory(reader *bufio.Reader) {
 			continue
 		}
 
-		// 3. Manejar Redirección (Si responde SECONDARY:X)
+		// Manejar Redirección
 		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 			newPrimaryID, _ := strconv.Atoi(reply[10:])
-			// Actualizamos el líder conocido globalmente
+			// Solo imprimir si cambiamos de objetivo
+			if knownPrimaryID != newPrimaryID {
+				fmt.Printf("🔄 El Nodo %d dice que el líder es %d. Redirigiendo...\n", primaryID, newPrimaryID)
+			}
 			knownPrimaryID = newPrimaryID
-			// El bucle 'for' volverá a ejecutarse inmediatamente con el nuevo ID
 			continue
 		}
 
-		// Si llegamos aquí, fue éxito
 		fmt.Println("\n--- RESULTADO ---")
 		fmt.Println(reply)
 		fmt.Println("-----------------")
-		break // Salir del bucle
+		break
 	}
 }
