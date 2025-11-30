@@ -165,13 +165,15 @@ func reviewInventory() {
 
 // 8. Funcionalidades del cliente: Modificar inventario [cite: 88]
 func modifyInventory(reader *bufio.Reader) {
-	// 1. Obtener datos del usuario (Igual que antes)
+	// 1. Obtener datos del usuario
 	fmt.Println("\n--- MODIFICAR INVENTARIO ---")
 	fmt.Println("a. Modificar cantidad")
 	fmt.Println("b. Modificar precio")
 	fmt.Print("Ingrese opción (a/b): ")
+	
 	opType, _ := reader.ReadString('\n')
-	opType = strings.TrimSpace(opType)
+	// CORRECCIÓN 1: Limpiar espacios y convertir a minúsculas para aceptar 'A' o 'a'
+	opType = strings.ToLower(strings.TrimSpace(opType))
 
 	fmt.Print("Ingrese nombre del ítem a modificar: ")
 	itemName, _ := reader.ReadString('\n')
@@ -192,7 +194,7 @@ func modifyInventory(reader *bufio.Reader) {
 	case "b":
 		op = common.OpSetPrice
 	default:
-		fmt.Println("Opción de modificación inválida.")
+		fmt.Println("❌ Opción de modificación inválida. Use 'a' o 'b'.")
 		return
 	}
 
@@ -203,13 +205,16 @@ func modifyInventory(reader *bufio.Reader) {
 		Seq:   0,
 	}
 
-	// 2. Bucle de intentos (Lógica de Reintento agregada)
+	// 2. Bucle de intentos con Redirección Automática
 	for {
 		primaryID, primaryAddr := discoverPrimary()
 		if primaryID == -1 {
 			return
 		}
-		fmt.Printf("✏️ Contactando al Primario (Nodo %d) en %s para la escritura.\n", primaryID, primaryAddr)
+		// Solo mostramos mensaje si cambiamos de nodo para no saturar la pantalla
+		if knownPrimaryID != primaryID {
+			fmt.Printf("✏️ Contactando al Primario (Nodo %d) en %s para la escritura.\n", primaryID, primaryAddr)
+		}
 
 		client, err := rpc.Dial("tcp", primaryAddr)
 		if err != nil {
@@ -231,15 +236,13 @@ func modifyInventory(reader *bufio.Reader) {
 		// 3. Manejar Redirección (Si responde SECONDARY:X)
 		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 			newPrimaryID, _ := strconv.Atoi(reply[10:])
-			fmt.Printf("🔄 Redireccionando: El líder real es el Nodo %d. Reintentando...\n", newPrimaryID)
-			
 			// Actualizamos el líder conocido globalmente
 			knownPrimaryID = newPrimaryID
-			// El bucle 'for' volverá a ejecutarse con el nuevo ID
+			// El bucle 'for' volverá a ejecutarse inmediatamente con el nuevo ID
 			continue
 		}
 
-		// Si llegamos aquí, fue éxito o un error de lógica del negocio
+		// Si llegamos aquí, fue éxito
 		fmt.Println("\n--- RESULTADO ---")
 		fmt.Println(reply)
 		fmt.Println("-----------------")
