@@ -166,91 +166,103 @@ func reviewInventory() {
 }
 
 // 8. Funcionalidades del cliente: Modificar inventario [cite: 88]
+// client/client.go
+
 func modifyInventory(reader *bufio.Reader) {
-    // --- (Parte 1: Obtener datos - NO CAMBIA) ---
-    fmt.Println("\n--- MODIFICAR INVENTARIO ---")
-    fmt.Println("a. Modificar cantidad")
-    fmt.Println("b. Modificar precio")
-    fmt.Print("Ingrese opción (a/b): ")
-    
-    opType, _ := reader.ReadString('\n')
-    opType = strings.ToLower(strings.TrimSpace(opType))
+	// --- (Parte 1: Obtener datos - NO CAMBIA) ---
+	fmt.Println("\n--- MODIFICAR INVENTARIO ---")
+	fmt.Println("a. Modificar cantidad")
+	fmt.Println("b. Modificar precio")
+	fmt.Print("Ingrese opción (a/b): ")
+	
+	opType, _ := reader.ReadString('\n')
+	opType = strings.ToLower(strings.TrimSpace(opType))
 
-    fmt.Print("Ingrese nombre del ítem a modificar: ")
-    itemName, _ := reader.ReadString('\n')
-    itemName = strings.TrimSpace(strings.ToUpper(itemName))
+	fmt.Print("Ingrese nombre del ítem a modificar: ")
+	itemName, _ := reader.ReadString('\n')
+	itemName = strings.TrimSpace(strings.ToUpper(itemName))
 
-    fmt.Print("Ingrese el nuevo valor (cantidad/precio): ")
-    valueStr, _ := reader.ReadString('\n')
-    newValue, err := strconv.Atoi(strings.TrimSpace(valueStr))
-    if err != nil {
-        fmt.Println("❌ Valor ingresado debe ser un número entero.")
-        return
-    }
-
-    var op string
-    switch opType {
-    case "a":
-        op = common.OpSetQuantity
-    case "b":
-        op = common.OpSetPrice
-    default:
-        fmt.Println("❌ Opción de modificación inválida. Use 'a' o 'b'.")
-        return
+	fmt.Print("Ingrese el nuevo valor (cantidad/precio): ")
+	valueStr, _ := reader.ReadString('\n')
+	newValue, err := strconv.Atoi(strings.TrimSpace(valueStr))
+	if err != nil {
+		fmt.Println("❌ Valor ingresado debe ser un número entero.")
+		return
 	}
 
-    event := common.Event{Op: op, Item: itemName, Value: newValue, Seq: 0}
+	var op string
+	switch opType {
+	case "a":
+		op = common.OpSetQuantity
+	case "b":
+		op = common.OpSetPrice
+	default:
+		fmt.Println("❌ Opción de modificación inválida. Use 'a' o 'b'.")
+		return
+	}
 
-    // --- (Parte 2: Bucle con Timeout y PAUSA INTELIGENTE) ---
-    for {
-        primaryID, primaryAddr := discoverPrimary()
-        if primaryID == -1 {
-            fmt.Println("⏳ Esperando a que el sistema se estabilice...")
-            time.Sleep(2 * time.Second) // Pausa si nadie responde
-            continue
-        }
+	event := common.Event{Op: op, Item: itemName, Value: newValue, Seq: 0}
 
-        if knownPrimaryID != primaryID {
-            fmt.Printf("✏️ Contactando al Nodo %d en %s...\n", primaryID, primaryAddr)
-        }
+	// --- (Parte 2: Bucle BLINDADO contra bloqueos) ---
+	for {
+		primaryID, primaryAddr := discoverPrimary()
+		if primaryID == -1 {
+			fmt.Println("⏳ Esperando sistema...")
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-        // Timeout de conexión de 2 segundos
-        conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
-        if err != nil {
-            fmt.Printf("⚠️ Error contactando Nodo %d (%v). Reintentando en 2s...\n", primaryID, err)
-            knownPrimaryID = -1 
-            time.Sleep(2 * time.Second) // <--- PAUSA CLAVE AQUÍ
-            continue
-        }
+		if knownPrimaryID != primaryID {
+			fmt.Printf("✏️ Contactando al Nodo %d en %s...\n", primaryID, primaryAddr)
+		}
 
-        client := rpc.NewClient(conn)
-        var reply string
-        
-        // Llamada RPC
-        err = client.Call("ServerNode.HandleClientRequest", &event, &reply)
-        client.Close() 
+		// 1. Timeout de Conexión (TCP)
+		conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
+		if err != nil {
+			fmt.Printf("⚠️ No se pudo conectar al Nodo %d. Reintentando...\n", primaryID)
+			knownPrimaryID = -1 
+			time.Sleep(2 * time.Second)
+			continue
+		}
 
-        if err != nil {
-            fmt.Printf("⚠️ El Nodo %d falló durante la operación (%v). Buscando nuevo líder...\n", primaryID, err)
-            knownPrimaryID = -1
-            time.Sleep(2 * time.Second) // <--- PAUSA CLAVE AQUÍ
-            continue
-        }
+		client := rpc.NewClient(conn)
+		var reply string
+		
+		// 2. TIMEOUT DE EJECUCIÓN (La solución al congelamiento)
+		// Usamos client.Go (asíncrono) y esperamos con un cronómetro.
+		call := client.Go("ServerNode.HandleClientRequest", &event, &reply, nil)
 
-        // Manejar Redirección
-        if len(reply) > 10 && reply[:10] == "SECONDARY:" {
-            newPrimaryID, _ := strconv.Atoi(reply[10:])
-            if knownPrimaryID != newPrimaryID {
-                fmt.Printf("🔄 El Nodo %d dice que el líder es %d. Redirigiendo...\n", primaryID, newPrimaryID)
-            }
-            knownPrimaryID = newPrimaryID
-            // No hacemos Sleep aquí porque una redirección suele ser rápida y válida
-            continue
-        }
+		select {
+		case <-call.Done:
+			// La llamada terminó (con éxito o error del servidor)
+			err = call.Error
+		case <-time.After(3 * time.Second):
+			// El servidor tardó mucho (está bloqueado replicando)
+			err = fmt.Errorf("timeout: el servidor aceptó la conexión pero no responde")
+		}
+		
+		client.Close() // Cerrar siempre
 
-        fmt.Println("\n--- RESULTADO ---")
-        fmt.Println(reply)
-        fmt.Println("-----------------")
-        break
-    }
+		if err != nil {
+			fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", primaryID, err)
+			knownPrimaryID = -1
+			time.Sleep(2 * time.Second) // Pausa para no saturar
+			continue
+		}
+
+		// 3. Manejar Redirección
+		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
+			newPrimaryID, _ := strconv.Atoi(reply[10:])
+			if knownPrimaryID != newPrimaryID {
+				fmt.Printf("🔄 El Nodo %d dice que el líder es %d. Redirigiendo...\n", primaryID, newPrimaryID)
+			}
+			knownPrimaryID = newPrimaryID
+			continue
+		}
+
+		fmt.Println("\n--- RESULTADO ---")
+		fmt.Println(reply)
+		fmt.Println("-----------------")
+		break
+	}
 }

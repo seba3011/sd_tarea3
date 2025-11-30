@@ -91,46 +91,46 @@ func (n *ServerNode) handleReadRequest(reply *string) error {
 }
 
 // main.go
-
 func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
-	// BLOQUEO LOCAL
-	n.StatusMutex.Lock()
-	n.State.Mu.Lock()
+    // 1. BLOQUEO LOCAL: Protegemos la memoria mientras actualizamos nosotros mismos
+    n.StatusMutex.Lock()
+    n.State.Mu.Lock()
 
-	// Asignar secuencia y aplicar localmente
-	req.Seq = n.State.SequenceNumber + 1
-	fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando...\n", n.ID, req.Seq)
-	
-	n.State.ApplyEvent(*req) 
-	n.State.Persist(n.ID) // Ignoramos error de persistencia para no ensuciar log
+    // Asignar secuencia y aplicar localmente
+    req.Seq = n.State.SequenceNumber + 1
+    fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando...\n", n.ID, req.Seq)
+    
+    n.State.ApplyEvent(*req) 
+    n.State.Persist(n.ID)
 
-	// ¡IMPORTANTE! DESBLOQUEAR ANTES DE SALIR A LA RED
-	// Si no desbloqueas aquí, el nodo queda sordo a otras peticiones mientras replica.
-	n.State.Mu.Unlock()
-	n.StatusMutex.Unlock()
+    // 2. ¡DESBLOQUEO CRÍTICO! 🔓
+    // Soltamos el candado ANTES de entrar al bucle de red.
+    // Así, si la red es lenta, el nodo sigue respondiendo "Ping" o lecturas a otros.
+    n.State.Mu.Unlock()
+    n.StatusMutex.Unlock()
 
-	// REPLICACIÓN CON TIMEOUT (Gracias a la nueva función replicateEvent)
-	successCount := 0
-	for id, addr := range NodeAddresses {
-		if id != n.ID {
-			// Ahora replicateEvent tiene timeout, así que esto no se bloqueará
-			if err := n.replicateEvent(addr, *req); err == nil {
-				successCount++
-			} else {
-				// Logueamos el error pero CONTINUAMOS
-				fmt.Printf("⚠️ Falló replicación a %d: %v\n", id, err)
-			}
-		}
-	}
+    // 3. REPLICACIÓN (Ahora es seguro tardarse aquí)
+    successCount := 0
+    for id, addr := range NodeAddresses {
+        if id != n.ID {
+            // Usamos la función con net.DialTimeout para no esperar eternamente
+            if err := n.replicateEvent(addr, *req); err == nil {
+                successCount++
+            } else {
+                // Si falla, solo imprimimos y seguimos. NO se bloquea el sistema.
+                fmt.Printf("⚠️ Falló replicación a %d: %v\n", id, err)
+            }
+        }
+    }
 
-	// Respuesta al cliente
-	if successCount == len(NodeAddresses)-1 {
-		*reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
-	} else {
-		*reply = fmt.Sprintf("WARNING: Evento %d procesado, pero falló replicación a algunos nodos.", req.Seq)
-	}
+    // 4. Responder al cliente
+    if successCount == len(NodeAddresses)-1 {
+        *reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
+    } else {
+        *reply = fmt.Sprintf("WARNING: Evento %d procesado, pero falló replicación a algunos nodos.", req.Seq)
+    }
 
-	return nil
+    return nil
 }
 
 // replicateEvent llama al RPC del secundario para aplicar un evento.
