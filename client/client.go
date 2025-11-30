@@ -21,7 +21,7 @@ var NodeAddresses = map[int]string{
 	3: "10.10.31.78:8083",
 }
 
-var knownPrimaryID = -1
+var knownPrimaryID = 3
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
