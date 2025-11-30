@@ -90,40 +90,67 @@ func (n *ServerNode) handleReadRequest(reply *string) error {
 	return nil
 }
 
-func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
-	n.StatusMutex.Lock()
-	defer n.StatusMutex.Unlock()
-	n.State.Mu.Lock()
-	defer n.State.Mu.Unlock()
+El cliente se queda "pegado" porque estás sufriendo un Deadlock Distribuido (Bloqueo Mutuo) o un bloqueo por operaciones de red lentas mientras mantienes los recursos cerrados.
 
-	// 3. Coordinación del primario: Asignar número de secuencia [cite: 56]
+El problema técnico: Tu función handleWriteRequest en el Nodo 3 bloquea el acceso al nodo (StatusMutex y State.Mu) y mantiene ese bloqueo mientras intenta comunicarse con los otros nodos (Replicación).
+
+El Nodo 3 bloquea sus recursos.
+
+Intenta contactar al Nodo 1 (Falla rápido: connection refused).
+
+Intenta contactar al Nodo 2.
+
+Si el Nodo 2 está intentando contactar al Nodo 3 al mismo tiempo (por ejemplo, enviando una Elección o Monitoreo), el Nodo 3 no puede responder porque tiene el candado puesto.
+
+Resultado: El Nodo 3 espera al Nodo 2, y el Nodo 2 espera al Nodo 3. El cliente espera eternamente.
+
+🛠️ La Solución: Liberar el Candado antes de Replicar
+Debemos modificar handleWriteRequest en main.go para que aplique los cambios locales, libere los candados (Unlock) y luego intente replicar a los otros nodos. Esto permite que el Nodo 3 siga respondiendo a otras peticiones (como "CheckPrimary" o "Election") mientras espera que la replicación termine.
+
+Reemplaza la función handleWriteRequest en main.go (en todas las MVs) con esta versión optimizada:
+
+Go
+
+// main.go
+
+func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
+	// 1. BLOQUEO: Solo para actualizar el estado local
+	n.StatusMutex.Lock()
+	n.State.Mu.Lock()
+
+	// Asignar número de secuencia y aplicar localmente
 	req.Seq = n.State.SequenceNumber + 1
-	
-	// Replicar el evento al estado de todos los secundarios (incluido él mismo para consistencia) [cite: 57, 61]
 	fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando a secundarios...\n", n.ID, req.Seq)
 	
-	n.State.ApplyEvent(*req) // Aplicar localmente primero
+	n.State.ApplyEvent(*req) 
 	if err := n.State.Persist(n.ID); err != nil {
 		log.Printf("Error al persistir estado local después de evento %d: %v", req.Seq, err)
 	}
 
+	// 2. DESBLOQUEO: Liberamos los recursos ANTES de salir a la red
+	// Esto evita deadlocks si los secundarios nos están contactando al mismo tiempo.
+	n.State.Mu.Unlock()
+	n.StatusMutex.Unlock()
+
+	// 3. REPLICACIÓN: Ahora es seguro hacer llamadas RPC lentas
 	successCount := 0
 	for id, addr := range NodeAddresses {
 		if id != n.ID {
+			// Añadimos un pequeño timeout manual o manejo de error simple
 			if err := n.replicateEvent(addr, *req); err == nil {
 				successCount++
 			} else {
+				// Solo loguear, no detenerse
 				log.Printf("⚠️ Error al replicar evento %d a nodo %d (%s): %v", req.Seq, id, addr, err)
 			}
 		}
 	}
 
+	// Validación de éxito (Consistencia eventual para esta tarea)
 	if successCount == len(NodeAddresses)-1 {
 		fmt.Printf("✅ Evento %d replicado exitosamente a todos los secundarios. Total: %d.\n", req.Seq, successCount)
 		*reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
 	} else {
-		// En un sistema real, esto requeriría un mecanismo de commit.
-		// Para esta tarea, asumimos éxito si el primario procesa el evento.
 		fmt.Printf("❌ Advertencia: Evento %d procesado localmente, pero falló replicación a %d nodos.\n", req.Seq, (len(NodeAddresses)-1)-successCount)
 		*reply = fmt.Sprintf("WARNING: Evento %d procesado localmente, falló replicación a algunos nodos.", req.Seq)
 	}
