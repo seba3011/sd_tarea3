@@ -43,7 +43,6 @@ Debe conectarse a cada máquina virtual y ejecutar el script desde la carpeta `s
 ```
 **En vm1 desde sd_tarea3:**
 ```bash
-cd client
 go run client/client.go
 ```
 ## Ejemplo matar nodo X
