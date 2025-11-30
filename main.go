@@ -309,15 +309,24 @@ func (n *ServerNode) sendElection(addr string) bool {
 	return reply == "OK"
 }
 
-// ElectionRequest (RPC): Recibe un mensaje de "Election" de un nodo de ID menor.
 func (n *ServerNode) ElectionRequest(callerID int, reply *string) error {
 	fmt.Printf("   <- Recibido mensaje 'Election' de Nodo %d. Respondiendo 'OK'.\n", callerID)
 	*reply = "OK"
 
-	// El nodo de ID más alto que recibe un mensaje de Election debe iniciar su propia elección.
-	// Esto es clave en el Algoritmo del Matón.
-	if callerID < n.ID {
-		go n.StartElection()
+	n.StatusMutex.RLock()
+	isPrimary := n.IsPrimary
+	n.StatusMutex.RUnlock()
+
+	if isPrimary {
+		// CASO CRÍTICO: Soy el primario y alguien menor inició una elección (tal vez pensó que morí).
+		// No inicio elección, simplemente les recuerdo a todos quién manda.
+		fmt.Printf("   ⚠️ Recibí elección de %d siendo yo Primario. Reafirmando autoridad...\n", callerID)
+		go n.broadcastCoordinator()
+	} else {
+		// Algoritmo estándar: Si soy mayor que el que llama, tomo el relevo.
+		if callerID < n.ID {
+			go n.StartElection()
+		}
 	}
 
 	return nil
