@@ -11,17 +11,17 @@ import (
 	"strings"
 	"time"
 
-	"sd_tarea3/common" // Asume que el directorio es sd_tarea3
+	"sd_tarea3/common" 
 )
 
-// Configuración de Nodos (debe ser consistente con main.go)
 var NodeAddresses = map[int]string{
+    // direccion ip real de cada nodo
 	1: "10.10.31.76:8081",
 	2: "10.10.31.77:8082",
 	3: "10.10.31.78:8083",
 }
 
-var knownPrimaryID = 3
+var knownPrimaryID = 3 // asume nodo 3 como lider al inicio
 
 func main() {
 	reader := bufio.NewReader(os.Stdin)
@@ -53,43 +53,36 @@ func main() {
 	}
 }
 
-// 9. Descubrimiento del líder por parte del cliente [cite: 90]
 func discoverPrimary() (int, string) {
-	// Intentar con el primario conocido primero.
 	if knownPrimaryID != -1 && NodeAddresses[knownPrimaryID] != "" {
 		if checkNode(knownPrimaryID) == knownPrimaryID {
 			return knownPrimaryID, NodeAddresses[knownPrimaryID]
 		}
 	}
 
-	// Contactar a un nodo de la lista de nodos conocidos[cite: 93].
 	for id, addr := range NodeAddresses {
 		primaryID := checkNode(id)
 		if primaryID == id {
-			// El nodo contactado es el primario.
+
 			knownPrimaryID = primaryID
 			return primaryID, addr
 		} else if primaryID != -1 {
-			// El nodo contactado es secundario, e indicó el primario actual[cite: 94].
 			knownPrimaryID = primaryID
 			return primaryID, NodeAddresses[primaryID]
 		}
 	}
 
-	// Si ninguno de los 3 nodos responde[cite: 96].
 	fmt.Println("❌ No es posible contactar con el sistema: Ningún nodo responde.")
 	return -1, ""
 }
 
-// checkNode intenta conectar a un nodo. Retorna su ID si es el primario, o el ID
-// del primario que le indicó (si es secundario), o -1 si falla.
 func checkNode(nodeID int) int {
 	addr := NodeAddresses[nodeID]
-	
-	// CORRECCIÓN: Usar DialTimeout. Si el nodo no responde en 1 seg, pasamos al siguiente.
+
+    // timeout rapido para saltar nodos muertos
 	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
-		// fmt.Printf("⚠️ Nodo %d no responde.\n", nodeID)
+
 		return -1
 	}
 	
@@ -97,17 +90,10 @@ func checkNode(nodeID int) int {
 	defer client.Close()
 
 	var reply string
-	
-	// Usamos Read para no enviar nil
 	readEvent := common.Event{Op: "READ"}
-	
-	// También podríamos usar Go+Select aquí, pero como ya conectamos (TCP), 
-	// el Call suele ser rápido a menos que el servidor esté en Deadlock.
-	// Como ya arreglaste el servidor, esto es seguro.
 	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
 	
 	if err != nil {
-		// fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", nodeID, err)
 		return -1
 	}
 
@@ -121,7 +107,6 @@ func checkNode(nodeID int) int {
 	return -1
 }
 
-// 8. Funcionalidades del cliente: Revisar inventario [cite: 87]
 func reviewInventory() {
 	primaryID, primaryAddr := discoverPrimary()
 	if primaryID == -1 {
@@ -129,7 +114,6 @@ func reviewInventory() {
 	}
 	fmt.Printf("🔍 Contactando al Primario (Nodo %d) en %s para la lectura.\n", primaryID, primaryAddr)
 
-	// CORRECCIÓN: Usar DialTimeout
 	conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
 	if err != nil {
 		fmt.Println("❌ Error al conectar con el primario:", err)
@@ -142,8 +126,6 @@ func reviewInventory() {
 
 	var reply string
 	readEvent := common.Event{Op: "READ"}
-	
-	// Llamada RPC con manejo de error básico
 	err = client.Call("ServerNode.HandleClientRequest", &readEvent, &reply)
 	
 	if err != nil {
@@ -154,7 +136,6 @@ func reviewInventory() {
 
 	if len(reply) > 9 && reply[:9] == "INVENTORY" {
 		fmt.Println("\n--- INVENTARIO ACTUAL ---")
-		// (Resto del parseo igual que antes...)
 		inventoryJSON := reply[10:strings.LastIndex(reply, "\n")] 
 		sequenceLine := reply[strings.LastIndex(reply, "\n")+1:]
 
@@ -170,7 +151,6 @@ func reviewInventory() {
 		fmt.Println(sequenceLine)
 		fmt.Println("------------------------")
 	} else if len(reply) > 10 && reply[:10] == "SECONDARY:" {
-		// Manejar redirección en lectura también es buena idea
 		newID, _ := strconv.Atoi(reply[10:])
 		fmt.Printf("🔄 El nodo %d indica que el líder es %d. Reintente.\n", primaryID, newID)
 		knownPrimaryID = newID
@@ -179,11 +159,8 @@ func reviewInventory() {
 	}
 }
 
-// 8. Funcionalidades del cliente: Modificar inventario [cite: 88]
-// client/client.go
-
 func modifyInventory(reader *bufio.Reader) {
-	// --- (Parte 1: Obtener datos - NO CAMBIA) ---
+
 	fmt.Println("\n--- MODIFICAR INVENTARIO ---")
 	fmt.Println("a. Modificar cantidad")
 	fmt.Println("b. Modificar precio")
@@ -216,9 +193,7 @@ func modifyInventory(reader *bufio.Reader) {
 	}
 
 	event := common.Event{Op: op, Item: itemName, Value: newValue, Seq: 0}
-
-	// --- (Parte 2: Bucle BLINDADO contra bloqueos) ---
-	for {
+	for { // reintenta operacion si hay fallos
 		primaryID, primaryAddr := discoverPrimary()
 		if primaryID == -1 {
 			fmt.Println("⏳ Esperando sistema...")
@@ -229,8 +204,7 @@ func modifyInventory(reader *bufio.Reader) {
 		if knownPrimaryID != primaryID {
 			fmt.Printf("✏️ Contactando al Nodo %d en %s...\n", primaryID, primaryAddr)
 		}
-
-		// 1. Timeout de Conexión (TCP)
+        // conecta con timeout para no congelar
 		conn, err := net.DialTimeout("tcp", primaryAddr, 2*time.Second)
 		if err != nil {
 			fmt.Printf("⚠️ No se pudo conectar al Nodo %d. Reintentando...\n", primaryID)
@@ -241,45 +215,36 @@ func modifyInventory(reader *bufio.Reader) {
 
 		client := rpc.NewClient(conn)
 		var reply string
-		
-		// 2. TIMEOUT DE EJECUCIÓN (La solución al congelamiento)
-		// Usamos client.Go (asíncrono) y esperamos con un cronómetro.
+        // llamada asincrona para evitar deadlock
 		call := client.Go("ServerNode.HandleClientRequest", &event, &reply, nil)
 		select {
 			case <-call.Done:
-				// La llamada terminó
 				err = call.Error
-			case <-time.After(12 * time.Second): // <--- ¡CAMBIAR DE 3 A 6 SEGUNDOS!
-				// Damos tiempo suficiente para que el servidor intente contactar a todos los nodos
-				// (2 seg por nodo * 2 nodos = 4 seg. Con 6 seg estamos cubiertos).
+			case <-time.After(12 * time.Second): // espera extendida para replicacion lenta
 				err = fmt.Errorf("timeout: el servidor aceptó la conexión pero tardó demasiado en replicar")
 		}
 		
-		client.Close() // Cerrar siempre
+		client.Close()
 
 		if err != nil {
 			fmt.Printf("⚠️ Error RPC con Nodo %d: %v\n", primaryID, err)
 			knownPrimaryID = -1
-			time.Sleep(2 * time.Second) // Pausa para no saturar
+			time.Sleep(2 * time.Second) 
 			continue
 		}
-		// 3. Manejar Redirección
 		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 			newPrimaryID, _ := strconv.Atoi(reply[10:])
-			
-			// CASO ESPECIAL: El nodo no sabe quién es el líder todavía (-1)
 			if newPrimaryID == -1 {
+                // espera si el sistema esta eligiendo lider
 				fmt.Println("⏳ El nodo contactado está en votación (Líder desconocido). Esperando 2s...")
 				time.Sleep(2 * time.Second)
-				knownPrimaryID = -1 // Forzar redescubrimiento total
+				knownPrimaryID = -1 
 				continue
 			}
-
-			// CASO NORMAL: Redirección
 			if knownPrimaryID != newPrimaryID {
 				fmt.Printf("🔄 El Nodo %d dice que el líder es %d. Redirigiendo...\n", primaryID, newPrimaryID)
 			}
-			knownPrimaryID = newPrimaryID
+			knownPrimaryID = newPrimaryID // actualiza quien es el nuevo lider
 			continue
 		}
 

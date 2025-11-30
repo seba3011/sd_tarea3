@@ -76,7 +76,7 @@ func (n *ServerNode) HandleClientRequest(req *common.Event, reply *string) error
 }
 
 func (n *ServerNode) handleReadRequest(reply *string) error {
-	// Las solicitudes de lectura no generan nuevos eventos[cite: 78].
+	// Las solicitudes de lectura no generan nuevos eventos.
 	// Devuelve el estado actual del inventario.
 	n.State.Mu.RLock()
 	defer n.State.Mu.RUnlock()
@@ -90,52 +90,43 @@ func (n *ServerNode) handleReadRequest(reply *string) error {
 	return nil
 }
 
-// main.go
+
 func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
-    // 1. BLOQUEO LOCAL: Protegemos memoria y disco
-    n.StatusMutex.Lock()
-    n.State.Mu.Lock()
+    // bloqueo local para escritura segura
+	n.StatusMutex.Lock()
+	n.State.Mu.Lock()
+	req.Seq = n.State.SequenceNumber + 1
+	fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando...\n", n.ID, req.Seq)
+	
+	n.State.ApplyEvent(*req)
+	n.State.Persist(n.ID)
 
-    // Asignar secuencia y aplicar localmente
-    req.Seq = n.State.SequenceNumber + 1
-    fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando...\n", n.ID, req.Seq)
-    
-    n.State.ApplyEvent(*req)
-    n.State.Persist(n.ID)
+    // desbloqueo critico antes de replicar para no congelar
+	n.State.Mu.Unlock()
+	n.StatusMutex.Unlock()
 
-    // 2. ¡DESBLOQUEO CRÍTICO! 🔓
-    // Liberamos el nodo ANTES de entrar a la red lenta.
-    n.State.Mu.Unlock()
-    n.StatusMutex.Unlock()
-    // ------------------------------------------------
+	successCount := 0
+	for id, addr := range NodeAddresses {
+		if id != n.ID {
+			if err := n.replicateEvent(addr, *req); err == nil {
+				successCount++
+			} else {
+				fmt.Printf("⚠️ Falló rep a %d: %v\n", id, err)
+			}
+		}
+	}
 
-    // 3. Bucle de Replicación
-    successCount := 0
-    for id, addr := range NodeAddresses {
-        if id != n.ID {
-            // Llamamos a replicateEvent (que debe tener el timeout interno)
-            if err := n.replicateEvent(addr, *req); err == nil {
-                successCount++
-            } else {
-                fmt.Printf("⚠️ Falló rep a %d: %v\n", id, err)
-            }
-        }
-    }
-    
-    // 4. Responder al cliente
-    // (Aquí borré el 'return nil' que tenías antes, para que este código se ejecute)
-    if successCount == len(NodeAddresses)-1 {
-        *reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
-    } else {
-        *reply = fmt.Sprintf("WARNING: Evento %d procesado, pero falló replicación a algunos nodos.", req.Seq)
-    }
+	if successCount == len(NodeAddresses)-1 {
+		*reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
+	} else {
+		*reply = fmt.Sprintf("WARNING: Evento %d procesado, pero falló replicación a algunos nodos.", req.Seq)
+	}
 
-    return nil
+	return nil
 }
 
-// replicateEvent llama al RPC del secundario para aplicar un evento.
 func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) error {
-	// 1. Timeout de Conexión (TCP): 1 segundo
+    // timeout rapido de conexion tcp
 	conn, err := net.DialTimeout("tcp", secondaryAddr, 1*time.Second)
 	if err != nil {
 		return fmt.Errorf("timeout conexión: %v", err)
@@ -146,29 +137,24 @@ func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) er
 
 	var reply string
 
-	// 2. TIMEOUT DE EJECUCIÓN (RPC) - ¡ESTO EVITA EL CONGELAMIENTO!
-	// Usamos client.Go para no bloquearnos esperando.
+    // llamada asincrona para evitar bloqueo infinito
 	call := client.Go("ServerNode.ReceiveReplication", event, &reply, nil)
 
 	select {
 	case <-call.Done:
-		// La llamada terminó (con éxito o error del otro lado)
 		return call.Error
 	case <-time.After(1 * time.Second):
-		// El otro nodo aceptó la conexión pero no responde. LO CORTAMOS.
 		return fmt.Errorf("timeout RPC: nodo lento o colgado")
 	}
 }
 
-// Módulo de Operaciones: ReceiveReplication (RPC)
-// Método llamado por el primario para replicar un evento.
+
 func (n *ServerNode) ReceiveReplication(event common.Event, reply *string) error {
 	n.StatusMutex.RLock()
 	isPrimary := n.IsPrimary
 	n.StatusMutex.RUnlock()
 
 	if isPrimary {
-		// El primario no debe recibir replicación de sí mismo.
 		*reply = "IGNORAR"
 		return nil
 	}
@@ -181,12 +167,10 @@ func (n *ServerNode) ReceiveReplication(event common.Event, reply *string) error
 	return nil
 }
 
-// Módulo de Monitoreo: CheckPrimary (RPC)
-// Método llamado por los secundarios para vigilar al primario[cite: 53].
 func (n *ServerNode) CheckPrimary(ignored bool, reply *string) error {
 	n.StatusMutex.RLock()
 	if n.IsPrimary {
-		*reply = "ACK" // El primario responde con un ACK [cite: 40]
+		*reply = "ACK"
 	} else {
 		*reply = "NACK"
 	}
@@ -194,8 +178,6 @@ func (n *ServerNode) CheckPrimary(ignored bool, reply *string) error {
 	return nil
 }
 
-// Módulo de Sincronización: GetState (RPC)
-// Método llamado por un nodo que se reintegra para obtener el estado actual[cite: 63, 64].
 func (n *ServerNode) GetState(ignored bool, reply *common.ReplicatedState) error {
 	n.StatusMutex.RLock()
 	if !n.IsPrimary {
@@ -207,14 +189,14 @@ func (n *ServerNode) GetState(ignored bool, reply *common.ReplicatedState) error
 	n.State.Mu.RLock()
 	defer n.State.Mu.RUnlock()
 
-	// Retorna una copia del estado persistente
 	*reply = *n.State
 	return nil
 }
 
-// 2. Mecanismo de detección de fallos [cite: 52]
+
 func (n *ServerNode) StartMonitoring() {
-	ticker := time.NewTicker(2 * time.Second) // Monitoreo periódico
+    // monitoreo constante del lider para detectar fallos
+	ticker := time.NewTicker(2 * time.Second) 
 	defer ticker.Stop()
 
 	for {
@@ -228,15 +210,12 @@ func (n *ServerNode) StartMonitoring() {
 			n.StatusMutex.RUnlock()
 
 			if primaryID == n.ID || primaryID == -1 {
-				// No monitorea si es primario o si aún no hay primario.
 				continue
 			}
 
-			// Intentar contactar al primario
 			primaryAddr := NodeAddresses[primaryID]
 			client, err := rpc.Dial("tcp", primaryAddr)
 			if err != nil {
-				// No se pudo conectar: Fallo asumido [cite: 54]
 				fmt.Printf("🔴 Fallo detectado: Nodo primario (%d) en %s no responde. Iniciando elección de líder...\n", primaryID, primaryAddr)
 				go n.StartElection()
 				continue
@@ -244,21 +223,19 @@ func (n *ServerNode) StartMonitoring() {
 			defer client.Close()
 
 			var reply string
-			// CheckPrimary es el ACK periódico [cite: 40, 53]
+			
 			err = client.Call("ServerNode.CheckPrimary", true, &reply)
 			if err != nil || reply != "ACK" {
-				// La conexión falló o el nodo no se identificó como primario
 				fmt.Printf("🔴 Fallo detectado: Nodo primario (%d) en %s falló CheckPrimary. Iniciando elección de líder...\n", primaryID, primaryAddr)
 				go n.StartElection()
 				continue
 			}
 
-			// fmt.Printf("🟢 ACK recibido de Primario (%d).\n", primaryID)
 		}
 	}
 }
 
-// 1. Elección de líder (Algoritmo del matón) [cite: 47]
+
 func (n *ServerNode) StartElection() {
 	n.StatusMutex.Lock()
 	if n.IsPrimary {
@@ -268,56 +245,47 @@ func (n *ServerNode) StartElection() {
 	n.StatusMutex.Unlock()
 
 	fmt.Printf("📢 Nodo %d: Iniciando elección...\n", n.ID)
-
-	// Variable para saber si encontramos a alguien digno que SÍ tomó el mando
+    // algoritmo de eleccion bully buscando ids mayores
 	leaderFound := false
 
 	for id, addr := range NodeAddresses {
 		if id > n.ID {
-			// Intentar contactar al nodo mayor
 			if n.sendElection(addr) {
 				fmt.Printf("   -> Nodo más alto (%d) respondió 'OK'. Esperando coordinación...\n", id)
-				
-				// Esperamos un momento para ver si cumple su promesa
 				time.Sleep(3 * time.Second)
 
-				// Verificamos si ya hay un nuevo líder
 				n.StatusMutex.RLock()
 				primaryID := n.CurrentPrimary
 				n.StatusMutex.RUnlock()
 
 				if primaryID != -1 && primaryID != n.ID {
-					// ¡El nodo mayor cumplió! Terminamos.
 					leaderFound = true
 					fmt.Println("   -> Coordinación recibida exitosamente.")
 					return 
 				}
 
-				// Si llegamos aquí, el nodo mayor respondió pero NO tomó el mando.
 				fmt.Printf("⚠️ El nodo %d respondió pero falló en coordinar. Lo ignoro y continúo.\n", id)
-				// NO hacemos return. Seguimos buscando o nos autoproclamamos.
 			}
 		}
 	}
 
-	// Si terminamos el bucle y nadie tomó el mando (o nadie respondió), me autoproclamo.
 	if !leaderFound {
 		n.becomePrimary()
 	}
 }
-// sendElection envía un mensaje de elección. Retorna true si recibe respuesta (OK).
+
 func (n *ServerNode) sendElection(addr string) bool {
 	client, err := rpc.Dial("tcp", addr)
 	if err != nil {
-		return false // No responde
+		return false 
 	}
 	defer client.Close()
 
 	var reply string
-	// ElectionRequest es un mensaje para iniciar el proceso de Matón
+
 	err = client.Call("ServerNode.ElectionRequest", n.ID, &reply)
 	if err != nil {
-		return false // Falló la llamada RPC
+		return false 
 	}
 
 	return reply == "OK"
@@ -332,12 +300,10 @@ func (n *ServerNode) ElectionRequest(callerID int, reply *string) error {
 	n.StatusMutex.RUnlock()
 
 	if isPrimary {
-		// CASO CRÍTICO: Soy el primario y alguien menor inició una elección (tal vez pensó que morí).
-		// No inicio elección, simplemente les recuerdo a todos quién manda.
+        // reafirma autoridad si ya es lider ante una eleccion
 		fmt.Printf("   ⚠️ Recibí elección de %d siendo yo Primario. Reafirmando autoridad...\n", callerID)
 		go n.broadcastCoordinator()
 	} else {
-		// Algoritmo estándar: Si soy mayor que el que llama, tomo el relevo.
 		if callerID < n.ID {
 			go n.StartElection()
 		}
@@ -346,19 +312,16 @@ func (n *ServerNode) ElectionRequest(callerID int, reply *string) error {
 	return nil
 }
 
-// CoordinatorMessage (RPC): Recibe un mensaje de "Coordinator" del nuevo primario.
+
 func (n *ServerNode) CoordinatorMessage(newPrimaryID int, reply *string) error {
 	n.StatusMutex.Lock()
-	// No usamos defer aquí para poder liberar el lock antes de llamar al monitoreo
-	
+    // actualizacion del nuevo lider en nodos secundarios
 	if n.IsPrimary {
 		if newPrimaryID > n.ID {
 			n.IsPrimary = false
 			n.CurrentPrimary = newPrimaryID
 			fmt.Printf("📣 Nuevo primario: Nodo %d. Yo soy secundario.\n", newPrimaryID)
-			n.StatusMutex.Unlock() // IMPORTANTE: Liberar antes de iniciar monitoreo
-
-			// Reiniciar monitoreo en una goroutine
+			n.StatusMutex.Unlock() 
 			go n.restartMonitoring()
 		} else {
 			n.StatusMutex.Unlock()
@@ -367,9 +330,8 @@ func (n *ServerNode) CoordinatorMessage(newPrimaryID int, reply *string) error {
 	} else {
 		n.CurrentPrimary = newPrimaryID
 		fmt.Printf("📣 Nuevo primario: Nodo %d. Yo soy secundario.\n", newPrimaryID)
-		n.StatusMutex.Unlock() // IMPORTANTE: Liberar antes de iniciar monitoreo
+		n.StatusMutex.Unlock() 
 		
-		// Reiniciar monitoreo en una goroutine
 		go n.restartMonitoring()
 	}
 
@@ -377,19 +339,14 @@ func (n *ServerNode) CoordinatorMessage(newPrimaryID int, reply *string) error {
 	return nil
 }
 
-// Función auxiliar para reiniciar el monitoreo de forma segura
 func (n *ServerNode) restartMonitoring() {
-	// Intentar detener el monitoreo anterior si existe, sin bloquear
 	select {
 	case n.StopMonitoring <- true:
 	default:
-		// No había monitoreo corriendo o nadie escuchaba, continuamos
 	}
-	// Iniciar el nuevo bucle de monitoreo
 	n.StartMonitoring()
 }
 
-// broadcastCoordinator envía un mensaje de "Coordinator" a todos los demás nodos.
 func (n *ServerNode) broadcastCoordinator() {
 	for id, addr := range NodeAddresses {
 		if id != n.ID {
@@ -407,14 +364,13 @@ func (n *ServerNode) broadcastCoordinator() {
 	fmt.Println("   -> Mensaje 'Coordinator' enviado a todos los nodos.")
 }
 
-// Lógica para que el nodo se convierta en primario.
+
 func (n *ServerNode) becomePrimary() {
-	n.StatusMutex.Lock() // Asegurar exclusión mutua al cambiar estado
+	n.StatusMutex.Lock() 
 	n.IsPrimary = true
 	n.CurrentPrimary = n.ID
 	n.StatusMutex.Unlock()
 
-	// Detener el monitoreo de forma no bloqueante
 	select {
 	case n.StopMonitoring <- true:
 	default:
@@ -425,25 +381,20 @@ func (n *ServerNode) becomePrimary() {
 	fmt.Printf("LOG: ELECCIÓN COMPLETADA: PRIMARIO ES NODO %d\n", n.ID)
 	fmt.Printf("====================================================\n")
 
-	// Enviar mensajes de coordinador en una goroutine para no bloquear
 	go n.broadcastCoordinator()
 }
 
-// 5. Reintegración: Lógica de recuperación
 func (n *ServerNode) Reintegrate() {
 	fmt.Println("🚀 Iniciando proceso de reintegración...")
 
-	// 1. Descubrir quién es el primario actual
 	primaryID := n.discoverPrimary()
 	if primaryID == -1 {
 		fmt.Println("❌ No se pudo encontrar al primario. Intentando iniciar elección...")
-		n.CurrentPrimary = -1 // Limpiar estado de primario conocido
-		n.StartElection()     // Intentar iniciar la elección
-		// Después de la elección, la función terminará y el nodo reiniciará monitoreo/servicio.
+		n.CurrentPrimary = -1 
+		n.StartElection()    
 		return
 	}
 
-	// 2. Contactar al primario para obtener el estado actual
 	primaryAddr := NodeAddresses[primaryID]
 	client, err := rpc.Dial("tcp", primaryAddr)
 	if err != nil {
@@ -459,14 +410,12 @@ func (n *ServerNode) Reintegrate() {
 		return
 	}
 
-	// 3. Aplicar el estado recuperado
 	n.State.Mu.Lock()
 	n.State.Inventory = newState.Inventory
 	n.State.SequenceNumber = newState.SequenceNumber
-	n.State.EventLog = newState.EventLog // Sobrescribir su estado previo [cite: 65]
+	n.State.EventLog = newState.EventLog 
 	n.State.Mu.Unlock()
 
-	// 4. Persistir el nuevo estado
 	if err := n.State.Persist(n.ID); err != nil {
 		log.Printf("Error al persistir el estado reintegrado: %v", err)
 	}
@@ -476,37 +425,32 @@ func (n *ServerNode) Reintegrate() {
 	n.StatusMutex.Unlock()
 
 	fmt.Printf("✅ Reintegración exitosa. Nuevo estado con secuencia %d.\n", n.State.SequenceNumber)
-	// 7. Logs de ejecución [cite: 83]
 	fmt.Printf("====================================================\n")
 	fmt.Printf("LOG: REINTEGRACIÓN: NODO %d SINCRONIZADO CON PRIMARIO %d\n", n.ID, primaryID)
 	fmt.Printf("====================================================\n")
 }
 
-// Descubre el primario consultando a los nodos conocidos.
+
 func (n *ServerNode) discoverPrimary() int {
-	// Intentar contactar a todos para encontrar al primario.
 	for id, addr := range NodeAddresses {
 		if id != n.ID {
 			client, err := rpc.Dial("tcp", addr)
 			if err == nil {
 				defer client.Close()
 				var reply string
-				// Un nodo secundario responderá con el ID del primario[cite: 94].
 				err = client.Call("ServerNode.HandleClientRequest", nil, &reply)
 				if err == nil {
-					// El formato de respuesta es "SECONDARY:ID" si es secundario.
 					if len(reply) > 10 && reply[:10] == "SECONDARY:" {
 						primaryID, _ := strconv.Atoi(reply[10:])
 						return primaryID
 					} else if len(reply) > 10 && reply[:9] == "INVENTORY" {
-						// Si responde con el inventario, es porque es el primario.
 						return id
 					}
 				}
 			}
 		}
 	}
-	return -1 // Primario no encontrado
+	return -1 
 }
 
 func main() {
@@ -523,28 +467,23 @@ func main() {
 	node := NewServerNode(nodeID)
 	address := NodeAddresses[nodeID]
 
-	// Módulo de coordinación/monitoreo: Lógica de inicio
 	if len(os.Args) == 3 && os.Args[2] == "primary_on_start" {
-		// Inicio forzado como primario (solo para el primer nodo al levantar el sistema).
 		node.StatusMutex.Lock()
 		node.becomePrimary()
 		node.StatusMutex.Unlock()
 	} else if node.State.SequenceNumber > 0 {
-		// Asume que si ya tiene estado, es una reintegración
 		node.Reintegrate()
 	} else {
-		// Es un inicio normal. Intentar encontrar un líder o iniciar elección.
 		go node.StartElection()
 	}
 
-	// Iniciar monitoreo si no es el primario actual.
 	if !node.IsPrimary {
 		go node.StartMonitoring()
 	}
 
-	// Iniciar servidor RPC
 	rpc.Register(node)
 	_, portStr, _ := net.SplitHostPort(address)
+    // escucha en cualquier ip del puerto para evitar errores de red
 	listener, err := net.Listen("tcp", ":"+portStr)
 	if err != nil {
 		log.Fatalf("Error al escuchar en %s: %v", address, err)
@@ -553,24 +492,22 @@ func main() {
 
 	fmt.Printf("🚀 Nodo %d ejecutándose en %s...\n", node.ID, address)
 
-	// Manejo de señales para una salida limpia (siMulando fail-stop)
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigc
 		fmt.Printf("\n🛑 Señal de terminación recibida. Guardando estado final...\n")
-		// 7. Logs de ejecución [cite: 84]
 		fmt.Printf("====================================================\n")
 		fmt.Printf("LOG: ESTADO FINAL NODO %d\n", node.ID)
 		fmt.Printf("Secuencia final: %d\n", node.State.SequenceNumber)
 		fmt.Printf("====================================================\n")
+        // guarda la persistencia de datos al cerrar el programa
 		if err := node.State.Persist(node.ID); err != nil {
 			log.Printf("Error al guardar estado al salir: %v", err)
 		}
 		os.Exit(0)
 	}()
 
-	// Servir peticiones RPC
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
