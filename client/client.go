@@ -231,14 +231,14 @@ func modifyInventory(reader *bufio.Reader) {
 		// 2. TIMEOUT DE EJECUCIÓN (La solución al congelamiento)
 		// Usamos client.Go (asíncrono) y esperamos con un cronómetro.
 		call := client.Go("ServerNode.HandleClientRequest", &event, &reply, nil)
-
 		select {
-		case <-call.Done:
-			// La llamada terminó (con éxito o error del servidor)
-			err = call.Error
-		case <-time.After(3 * time.Second):
-			// El servidor tardó mucho (está bloqueado replicando)
-			err = fmt.Errorf("timeout: el servidor aceptó la conexión pero no responde")
+			case <-call.Done:
+				// La llamada terminó
+				err = call.Error
+			case <-time.After(6 * time.Second): // <--- ¡CAMBIAR DE 3 A 6 SEGUNDOS!
+				// Damos tiempo suficiente para que el servidor intente contactar a todos los nodos
+				// (2 seg por nodo * 2 nodos = 4 seg. Con 6 seg estamos cubiertos).
+				err = fmt.Errorf("timeout: el servidor aceptó la conexión pero tardó demasiado en replicar")
 		}
 		
 		client.Close() // Cerrar siempre
