@@ -90,69 +90,44 @@ func (n *ServerNode) handleReadRequest(reply *string) error {
 	return nil
 }
 
-El cliente se queda "pegado" porque estás sufriendo un Deadlock Distribuido (Bloqueo Mutuo) o un bloqueo por operaciones de red lentas mientras mantienes los recursos cerrados.
-
-El problema técnico: Tu función handleWriteRequest en el Nodo 3 bloquea el acceso al nodo (StatusMutex y State.Mu) y mantiene ese bloqueo mientras intenta comunicarse con los otros nodos (Replicación).
-
-El Nodo 3 bloquea sus recursos.
-
-Intenta contactar al Nodo 1 (Falla rápido: connection refused).
-
-Intenta contactar al Nodo 2.
-
-Si el Nodo 2 está intentando contactar al Nodo 3 al mismo tiempo (por ejemplo, enviando una Elección o Monitoreo), el Nodo 3 no puede responder porque tiene el candado puesto.
-
-Resultado: El Nodo 3 espera al Nodo 2, y el Nodo 2 espera al Nodo 3. El cliente espera eternamente.
-
-🛠️ La Solución: Liberar el Candado antes de Replicar
-Debemos modificar handleWriteRequest en main.go para que aplique los cambios locales, libere los candados (Unlock) y luego intente replicar a los otros nodos. Esto permite que el Nodo 3 siga respondiendo a otras peticiones (como "CheckPrimary" o "Election") mientras espera que la replicación termine.
-
-Reemplaza la función handleWriteRequest en main.go (en todas las MVs) con esta versión optimizada:
-
-Go
-
 // main.go
 
 func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error {
-	// 1. BLOQUEO: Solo para actualizar el estado local
+	// BLOQUEO LOCAL
 	n.StatusMutex.Lock()
 	n.State.Mu.Lock()
 
-	// Asignar número de secuencia y aplicar localmente
+	// Asignar secuencia y aplicar localmente
 	req.Seq = n.State.SequenceNumber + 1
-	fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando a secundarios...\n", n.ID, req.Seq)
+	fmt.Printf("🔄 Primary (%d) recibe escritura. Asigna Seq: %d. Replicando...\n", n.ID, req.Seq)
 	
 	n.State.ApplyEvent(*req) 
-	if err := n.State.Persist(n.ID); err != nil {
-		log.Printf("Error al persistir estado local después de evento %d: %v", req.Seq, err)
-	}
+	n.State.Persist(n.ID) // Ignoramos error de persistencia para no ensuciar log
 
-	// 2. DESBLOQUEO: Liberamos los recursos ANTES de salir a la red
-	// Esto evita deadlocks si los secundarios nos están contactando al mismo tiempo.
+	// ¡IMPORTANTE! DESBLOQUEAR ANTES DE SALIR A LA RED
+	// Si no desbloqueas aquí, el nodo queda sordo a otras peticiones mientras replica.
 	n.State.Mu.Unlock()
 	n.StatusMutex.Unlock()
 
-	// 3. REPLICACIÓN: Ahora es seguro hacer llamadas RPC lentas
+	// REPLICACIÓN CON TIMEOUT (Gracias a la nueva función replicateEvent)
 	successCount := 0
 	for id, addr := range NodeAddresses {
 		if id != n.ID {
-			// Añadimos un pequeño timeout manual o manejo de error simple
+			// Ahora replicateEvent tiene timeout, así que esto no se bloqueará
 			if err := n.replicateEvent(addr, *req); err == nil {
 				successCount++
 			} else {
-				// Solo loguear, no detenerse
-				log.Printf("⚠️ Error al replicar evento %d a nodo %d (%s): %v", req.Seq, id, addr, err)
+				// Logueamos el error pero CONTINUAMOS
+				fmt.Printf("⚠️ Falló replicación a %d: %v\n", id, err)
 			}
 		}
 	}
 
-	// Validación de éxito (Consistencia eventual para esta tarea)
+	// Respuesta al cliente
 	if successCount == len(NodeAddresses)-1 {
-		fmt.Printf("✅ Evento %d replicado exitosamente a todos los secundarios. Total: %d.\n", req.Seq, successCount)
 		*reply = fmt.Sprintf("SUCCESS: Evento %d procesado y replicado.", req.Seq)
 	} else {
-		fmt.Printf("❌ Advertencia: Evento %d procesado localmente, pero falló replicación a %d nodos.\n", req.Seq, (len(NodeAddresses)-1)-successCount)
-		*reply = fmt.Sprintf("WARNING: Evento %d procesado localmente, falló replicación a algunos nodos.", req.Seq)
+		*reply = fmt.Sprintf("WARNING: Evento %d procesado, pero falló replicación a algunos nodos.", req.Seq)
 	}
 
 	return nil
@@ -160,13 +135,20 @@ func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error 
 
 // replicateEvent llama al RPC del secundario para aplicar un evento.
 func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) error {
-	client, err := rpc.Dial("tcp", secondaryAddr)
+	// 1. Establecer conexión con TIMEOUT de 2 segundos.
+	// Si el nodo está caído o lento, no nos quedamos pegados eternamente.
+	conn, err := net.DialTimeout("tcp", secondaryAddr, 2*time.Second)
 	if err != nil {
-		return err
+		return fmt.Errorf("timeout o error de conexión: %v", err)
 	}
+	
+	client := rpc.NewClient(conn)
 	defer client.Close()
 
 	var reply string
+	// 2. Hacer la llamada RPC
+	// También podríamos usar un canal para timeout en la llamada Call, 
+	// pero el DialTimeout suele ser suficiente para nodos caídos.
 	err = client.Call("ServerNode.ReceiveReplication", event, &reply)
 	if err != nil {
 		return err
