@@ -165,12 +165,7 @@ func reviewInventory() {
 
 // 8. Funcionalidades del cliente: Modificar inventario [cite: 88]
 func modifyInventory(reader *bufio.Reader) {
-	primaryID, primaryAddr := discoverPrimary()
-	if primaryID == -1 {
-		return
-	}
-	fmt.Printf("✏️ Contactando al Primario (Nodo %d) en %s para la escritura.\n", primaryID, primaryAddr)
-
+	// 1. Obtener datos del usuario (Igual que antes)
 	fmt.Println("\n--- MODIFICAR INVENTARIO ---")
 	fmt.Println("a. Modificar cantidad")
 	fmt.Println("b. Modificar precio")
@@ -205,26 +200,49 @@ func modifyInventory(reader *bufio.Reader) {
 		Op:    op,
 		Item:  itemName,
 		Value: newValue,
-		Seq:   0, // El primario asigna el número de secuencia [cite: 56]
+		Seq:   0,
 	}
 
-	client, err := rpc.Dial("tcp", primaryAddr)
-	if err != nil {
-		fmt.Println("❌ Error al conectar con el primario para escribir:", err)
-		knownPrimaryID = -1
-		return
-	}
-	defer client.Close()
+	// 2. Bucle de intentos (Lógica de Reintento agregada)
+	for {
+		primaryID, primaryAddr := discoverPrimary()
+		if primaryID == -1 {
+			return
+		}
+		fmt.Printf("✏️ Contactando al Primario (Nodo %d) en %s para la escritura.\n", primaryID, primaryAddr)
 
-	var reply string
-	err = client.Call("ServerNode.HandleClientRequest", &event, &reply)
-	if err != nil {
-		fmt.Println("❌ Error en la modificación del inventario:", err)
-		knownPrimaryID = -1
-		return
-	}
+		client, err := rpc.Dial("tcp", primaryAddr)
+		if err != nil {
+			fmt.Println("❌ Error al conectar con el primario:", err)
+			knownPrimaryID = -1
+			continue // Intentar descubrir de nuevo
+		}
+		
+		var reply string
+		err = client.Call("ServerNode.HandleClientRequest", &event, &reply)
+		client.Close() // Cerrar conexión tras la llamada
 
-	fmt.Println("\n--- RESULTADO ---")
-	fmt.Println(reply)
-	fmt.Println("-----------------")
+		if err != nil {
+			fmt.Println("❌ Error RPC:", err)
+			knownPrimaryID = -1
+			continue
+		}
+
+		// 3. Manejar Redirección (Si responde SECONDARY:X)
+		if len(reply) > 10 && reply[:10] == "SECONDARY:" {
+			newPrimaryID, _ := strconv.Atoi(reply[10:])
+			fmt.Printf("🔄 Redireccionando: El líder real es el Nodo %d. Reintentando...\n", newPrimaryID)
+			
+			// Actualizamos el líder conocido globalmente
+			knownPrimaryID = newPrimaryID
+			// El bucle 'for' volverá a ejecutarse con el nuevo ID
+			continue
+		}
+
+		// Si llegamos aquí, fue éxito o un error de lógica del negocio
+		fmt.Println("\n--- RESULTADO ---")
+		fmt.Println(reply)
+		fmt.Println("-----------------")
+		break // Salir del bucle
+	}
 }
