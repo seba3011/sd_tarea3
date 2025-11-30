@@ -255,43 +255,42 @@ func (n *ServerNode) StartElection() {
 
 	fmt.Printf("📢 Nodo %d: Iniciando elección...\n", n.ID)
 
-	higherNodesExist := false
-	
-	// Iterar sobre nodos con ID mayor
+	// Variable para saber si encontramos a alguien digno que SÍ tomó el mando
+	leaderFound := false
+
 	for id, addr := range NodeAddresses {
 		if id > n.ID {
-			higherNodesExist = true
+			// Intentar contactar al nodo mayor
 			if n.sendElection(addr) {
 				fmt.Printf("   -> Nodo más alto (%d) respondió 'OK'. Esperando coordinación...\n", id)
 				
-				// MEJORA: Esperar un tiempo prudente para recibir el mensaje de Coordinador.
-				// Si no llega, asumimos que el nodo superior falló después de responder.
+				// Esperamos un momento para ver si cumple su promesa
 				time.Sleep(3 * time.Second)
 
+				// Verificamos si ya hay un nuevo líder
 				n.StatusMutex.RLock()
 				primaryID := n.CurrentPrimary
 				n.StatusMutex.RUnlock()
 
-				// Si después de esperar, el primario sigue siendo desconocido o soy yo mismo (error),
-				// o el primario detectado no es el que respondió, seguimos intentando.
 				if primaryID != -1 && primaryID != n.ID {
+					// ¡El nodo mayor cumplió! Terminamos.
+					leaderFound = true
 					fmt.Println("   -> Coordinación recibida exitosamente.")
 					return 
 				}
 
-				fmt.Printf("⚠️ El nodo %d respondió pero NO envió coordinación. Asumiendo fallo y continuando elección...\n", id)
-				// No hacemos 'return', dejamos que el bucle continúe para probar otros nodos o autoproclamarnos.
+				// Si llegamos aquí, el nodo mayor respondió pero NO tomó el mando.
+				fmt.Printf("⚠️ El nodo %d respondió pero falló en coordinar. Lo ignoro y continúo.\n", id)
+				// NO hacemos return. Seguimos buscando o nos autoproclamamos.
 			}
 		}
 	}
 
-	// Si llegamos aquí, significa que:
-	// 1. No hay nodos mayores.
-	// 2. O los nodos mayores no respondieron.
-	// 3. O los nodos mayores respondieron 'OK' pero fallaron en tomar el mando (timeout).
-	n.becomePrimary()
+	// Si terminamos el bucle y nadie tomó el mando (o nadie respondió), me autoproclamo.
+	if !leaderFound {
+		n.becomePrimary()
+	}
 }
-
 // sendElection envía un mensaje de elección. Retorna true si recibe respuesta (OK).
 func (n *ServerNode) sendElection(addr string) bool {
 	client, err := rpc.Dial("tcp", addr)
