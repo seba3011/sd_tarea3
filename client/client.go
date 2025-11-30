@@ -249,7 +249,7 @@ func modifyInventory(reader *bufio.Reader) {
 			case <-call.Done:
 				// La llamada terminó
 				err = call.Error
-			case <-time.After(6 * time.Second): // <--- ¡CAMBIAR DE 3 A 6 SEGUNDOS!
+			case <-time.After(12 * time.Second): // <--- ¡CAMBIAR DE 3 A 6 SEGUNDOS!
 				// Damos tiempo suficiente para que el servidor intente contactar a todos los nodos
 				// (2 seg por nodo * 2 nodos = 4 seg. Con 6 seg estamos cubiertos).
 				err = fmt.Errorf("timeout: el servidor aceptó la conexión pero tardó demasiado en replicar")

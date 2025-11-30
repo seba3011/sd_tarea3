@@ -137,7 +137,7 @@ func (n *ServerNode) handleWriteRequest(req *common.Event, reply *string) error 
 func (n *ServerNode) replicateEvent(secondaryAddr string, event common.Event) error {
 	// 1. Establecer conexión con TIMEOUT de 2 segundos.
 	// Si el nodo está caído o lento, no nos quedamos pegados eternamente.
-	conn, err := net.DialTimeout("tcp", secondaryAddr, 2*time.Second)
+	conn, err := net.DialTimeout("tcp", secondaryAddr, 1*time.Second)
 	if err != nil {
 		return fmt.Errorf("timeout o error de conexión: %v", err)
 	}
@@ -540,7 +540,8 @@ func main() {
 
 	// Iniciar servidor RPC
 	rpc.Register(node)
-	listener, err := net.Listen("tcp", address)
+	_, portStr, _ := net.SplitHostPort(address)
+	listener, err := net.Listen("tcp", ":"+portStr)
 	if err != nil {
 		log.Fatalf("Error al escuchar en %s: %v", address, err)
 	}
