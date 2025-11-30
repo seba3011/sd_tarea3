@@ -311,30 +311,44 @@ func (n *ServerNode) ElectionRequest(callerID int, reply *string) error {
 // CoordinatorMessage (RPC): Recibe un mensaje de "Coordinator" del nuevo primario.
 func (n *ServerNode) CoordinatorMessage(newPrimaryID int, reply *string) error {
 	n.StatusMutex.Lock()
-	defer n.StatusMutex.Unlock()
-
+	// No usamos defer aquí para poder liberar el lock antes de llamar al monitoreo
+	
 	if n.IsPrimary {
-		// Si se recibe un mensaje de coordinador, pero yo también soy primario (split-brain),
-		// el de ID más alto gana (esto es implícito en el matón). Aquí solo se registra.
 		if newPrimaryID > n.ID {
 			n.IsPrimary = false
 			n.CurrentPrimary = newPrimaryID
-			n.StartMonitoring() // Reiniciar monitoreo
 			fmt.Printf("📣 Nuevo primario: Nodo %d. Yo soy secundario.\n", newPrimaryID)
-		} else if newPrimaryID < n.ID {
-			// Esto no debería pasar en el matón, pero si pasa, ignora el mensaje.
-			fmt.Printf("⚠️ Coordinador (%d) ignorado, mi ID (%d) es más alto. Mantengo el liderazgo.\n", newPrimaryID, n.ID)
+			n.StatusMutex.Unlock() // IMPORTANTE: Liberar antes de iniciar monitoreo
+
+			// Reiniciar monitoreo en una goroutine
+			go n.restartMonitoring()
 		} else {
-			// El primario se envió un mensaje a sí mismo.
+			n.StatusMutex.Unlock()
+			fmt.Printf("⚠️ Coordinador (%d) ignorado, mi ID (%d) es más alto.\n", newPrimaryID, n.ID)
 		}
 	} else {
 		n.CurrentPrimary = newPrimaryID
 		fmt.Printf("📣 Nuevo primario: Nodo %d. Yo soy secundario.\n", newPrimaryID)
-		n.StartMonitoring() // Asegurarse de que esté monitoreando al nuevo líder.
+		n.StatusMutex.Unlock() // IMPORTANTE: Liberar antes de iniciar monitoreo
+		
+		// Reiniciar monitoreo en una goroutine
+		go n.restartMonitoring()
 	}
 
 	*reply = "ACK"
 	return nil
+}
+
+// Función auxiliar para reiniciar el monitoreo de forma segura
+func (n *ServerNode) restartMonitoring() {
+	// Intentar detener el monitoreo anterior si existe, sin bloquear
+	select {
+	case n.StopMonitoring <- true:
+	default:
+		// No había monitoreo corriendo o nadie escuchaba, continuamos
+	}
+	// Iniciar el nuevo bucle de monitoreo
+	n.StartMonitoring()
 }
 
 // broadcastCoordinator envía un mensaje de "Coordinator" a todos los demás nodos.
@@ -357,16 +371,24 @@ func (n *ServerNode) broadcastCoordinator() {
 
 // Lógica para que el nodo se convierta en primario.
 func (n *ServerNode) becomePrimary() {
+	n.StatusMutex.Lock() // Asegurar exclusión mutua al cambiar estado
 	n.IsPrimary = true
 	n.CurrentPrimary = n.ID
-	n.StopMonitoring <- true // Detener el monitoreo al primario (a sí mismo)
+	n.StatusMutex.Unlock()
+
+	// Detener el monitoreo de forma no bloqueante
+	select {
+	case n.StopMonitoring <- true:
+	default:
+	}
+
 	fmt.Printf("👑 Nodo %d es el nuevo Primario.\n", n.ID)
-	// 7. Logs de ejecución [cite: 81]
 	fmt.Printf("====================================================\n")
 	fmt.Printf("LOG: ELECCIÓN COMPLETADA: PRIMARIO ES NODO %d\n", n.ID)
 	fmt.Printf("====================================================\n")
 
-	n.broadcastCoordinator()
+	// Enviar mensajes de coordinador en una goroutine para no bloquear
+	go n.broadcastCoordinator()
 }
 
 // 5. Reintegración: Lógica de recuperación
